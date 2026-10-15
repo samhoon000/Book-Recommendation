@@ -336,8 +336,9 @@ export function tidyName(name: string): string {
  * current one is sometimes another script (村上春樹), a local transliteration ("Fiódor Dostoievski")
  * or a shouting snapshot ("Fedor DOSTOYEVSKY"). The aliases vote: spellings that differ only by case,
  * accents or punctuation are one spelling ("Fyodor Dostoyevsky", "Fyodor DOSTOYEVSKY", "Dostoyevsky,
- * Fyodor"), and the one the most aliases use wins; word frequency breaks ties, and the current
- * spelling keeps a tie after that. Only the English catalog's own spellings vote (plain ASCII; accented
+ * Fyodor"), and the one the most aliases use wins. Ties go to the spelling typed in ordinary case more
+ * often (shouting aliases come from bulk imports), then to word frequency, then to the current
+ * spelling. Only the English catalog's own spellings vote (plain ASCII; accented
  * aliases come from foreign editions, "Fédor Dostoïevski"), unless there are none. Plain ASCII names
  * in ordinary case are never second-guessed.
  */
@@ -366,8 +367,10 @@ export function conventionalSpelling(name: string, aliases: string[]): string {
     groups.set(key, [...(groups.get(key) ?? []), c]);
   }
   const ownKey = own.join(" ");
+  // One normally typed alias is no evidence; among spellings several aliases share, the one typed in ordinary case wins.
+  const typed = (members: string[]) => (members.length > 1 ? members.filter((m) => !shouting(m)).length : 0);
   const [key, members] = [...groups.entries()].sort(
-    (a, b) => b[1].length - a[1].length || score(b[0]) - score(a[0]) || (a[0] === ownKey ? -1 : b[0] === ownKey ? 1 : 0),
+    (a, b) => b[1].length - a[1].length || typed(b[1]) - typed(a[1]) || score(b[0]) - score(a[0]) || (a[0] === ownKey ? -1 : b[0] === ownKey ? 1 : 0),
   )[0];
   if (key === ownKey) return tidyName(name);
   return tidyName(members.find((m) => tidyName(m) === m) ?? members[0]);
