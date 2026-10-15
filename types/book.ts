@@ -10,6 +10,8 @@ export interface Book {
   title: string;
   subtitle?: string;
   authors: string[];
+  /** Open Library author keys (OL123A), one per entry of `authors`, when the record came from Open Library. */
+  authorKeys?: string[];
   description?: string;
   coverUrl?: string;
   coverUrlLarge?: string;

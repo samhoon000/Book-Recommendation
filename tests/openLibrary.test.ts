@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   applyEnglishEdition,
   conventionalSpelling,
+  creditedAuthorKeys,
   normalizeSearchDoc,
   pickAuthor,
   pickDisplayTitle,
   pickEnglishEditionTitle,
+  sameName,
   stripCatalogNote,
+  tidyName,
   titleEnglishness,
 } from "@/lib/api/openLibrary";
 
@@ -238,5 +241,110 @@ describe("author spelling", () => {
   it("tidies shouting names", () => {
     expect(pickAuthor({ author_name: ["NEAL STEPHENSON"] })).toEqual(["Neal Stephenson"]);
     expect(pickAuthor({ author_name: ["Kawaguchi, Toshikazu"] })).toEqual(["Toshikazu Kawaguchi"]);
+  });
+
+  it("title-cases a shouting word inside a mixed-case name, leaving initials and numerals alone", () => {
+    expect(tidyName("Fedor DOSTOYEVSKY")).toBe("Fedor Dostoyevsky");
+    expect(tidyName("Serajul ISLAM")).toBe("Serajul Islam");
+    expect(tidyName("Flannery O'CONNOR")).toBe("Flannery O'Connor");
+    expect(tidyName("ANTOINE DE SAINT-EXUPERY")).toBe("Antoine De Saint-Exupery");
+    expect(tidyName("neal stephenson")).toBe("Neal Stephenson");
+    expect(tidyName("J.R.R. TOLKIEN")).toBe("J.R.R. Tolkien");
+    expect(tidyName("J. K. ROWLING")).toBe("J. K. Rowling");
+    expect(tidyName("DC Pierson")).toBe("DC Pierson");
+    expect(tidyName("Henry VIII")).toBe("Henry VIII");
+    expect(tidyName("Ed Brubaker")).toBe("Ed Brubaker");
+    expect(pickAuthor({ author_name: ["Fedor DOSTOYEVSKY"] })).toEqual(["Fedor Dostoyevsky"]);
+  });
+
+  it("lets the aliases vote on a shouting snapshot, and still never on an ordinary ASCII name", () => {
+    expect(pickAuthor({ author_name: ["Fedor DOSTOYEVSKY"], author_alternative_name: dostoevskyAliases })).toEqual(["Fyodor Dostoevsky"]);
+    expect(pickAuthor({ author_name: ["FEDOR DOSTOYEVSKY"], author_alternative_name: dostoevskyAliases })).toEqual(["Fyodor Dostoevsky"]);
+    expect(conventionalSpelling("NEAL STEPHENSON", ["Stephen Bury", "Neal Town Stephenson", "NEAL STEPHENSON", "N. Stephenson"])).toBe("Neal Stephenson");
+    expect(conventionalSpelling("Fedor Dostoyevsky", dostoevskyAliases)).toBe("Fedor Dostoyevsky");
+  });
+});
+
+describe("contributors listed as authors", () => {
+  /** search.json for The Help: the Spanish translator reached the work's author list under two author records. */
+  const helpDoc = {
+    key: "/works/OL11999891W",
+    title: "The Help",
+    author_name: ["Kathryn Stockett", "Álvaro Abella Villar", "Alvaro Abella"],
+    author_key: ["OL5176880A", "OL7934770A", "OL10716583A"],
+    author_alternative_name: ["STOCKETT KATHRYN"],
+    contributor: ["Hesko-Kołodzińska, Małgorzata", "Aleksandrova, Marii︠a︡, translator", "Girard, Pierre, 1940-"],
+    editions: { numFound: 32, docs: [{ key: "/books/OL24387011M", title: "The help", language: ["eng"], author_key: ["OL5176880A", "OL7934770A", "OL10716583A"] }] },
+  };
+
+  it("lists the same person once and keeps the author keys in step with the names", () => {
+    const book = normalizeSearchDoc(helpDoc)!;
+    expect(book.authors).toEqual(["Kathryn Stockett", "Álvaro Abella Villar"]);
+    expect(book.authorKeys).toEqual(["OL5176880A", "OL7934770A"]);
+    expect(pickAuthor({ author_name: ["James Lamar Roberts", "Roberts, James L."], author_alternative_name: ["James L. Roberts", "James L. ROBERTS"] })).toEqual(["James Lamar Roberts"]);
+    expect(normalizeSearchDoc({ key: "/works/OL1W", title: "Solaris", author_name: ["Stanisław Lem"] })!.authorKeys).toBeUndefined();
+  });
+
+  it("recognises the same person under a shorter spelling, an initial or an inverted form", () => {
+    expect(sameName("Alvaro Abella", "Álvaro Abella Villar")).toBe(true);
+    expect(sameName("James L. Roberts", "James Lamar Roberts")).toBe(true);
+    expect(sameName("garnett, constance, ", "Constance Garnett")).toBe(true);
+    expect(sameName("Ken Liu", "Cixin Liu")).toBe(false);
+    expect(sameName("J. K.", "J. K. Rowling")).toBe(false);
+  });
+
+  it("drops later names the record itself credits as translator, illustrator or editor, never the first", () => {
+    const contributor = [
+      "Garnett, Constance, 1861-1946, translator",
+      "Eichenberg, Fritz, 1901-1990, ill.",
+      "Ignat Avsey (Translator)",
+      "Fyodor Dostoyevsky (Translator)",
+      "Brubaker, Ed",
+    ];
+    expect(pickAuthor({ author_name: ["Fiódor Dostoievski", "Constance Garnett", "Fritz Eichenberg", "Ed Brubaker"], author_alternative_name: ["Fyodor Dostoevsky", "Dostoevsky, Fyodor"], contributor })).toEqual([
+      "Fyodor Dostoevsky",
+      "Ed Brubaker",
+    ]);
+    // Contributors without a role are usually the authors themselves (by-statement names).
+    expect(pickAuthor({ author_name: ["Terry Pratchett", "Neil Gaiman"], contributor: ["Gaiman, Neil", "Gaiman, Neil.", "Pratchett, Terry."] })).toEqual(["Terry Pratchett", "Neil Gaiman"]);
+  });
+
+  it("names at most three authors", () => {
+    expect(pickAuthor({ author_name: ["刘慈欣", "Vincent Schmitt", "Gwennaël Gaffric", "Marc Simonetti", "Ken Liu"], author_alternative_name: ["Cixin Liu", "Liu Cixin"] })).toEqual([
+      "Cixin Liu",
+      "Vincent Schmitt",
+      "Gwennaël Gaffric",
+    ]);
+  });
+
+  it("ranks authors by how many editions credit them, once the list is long enough to say", () => {
+    const edition = (...keys: string[]) => ({ key: "/books/OL1M", authors: keys.map((k) => ({ key: `/authors/${k}` })) });
+    const entries = [
+      edition("OL5176880A"),
+      edition("OL5176880A"),
+      edition("OL5176880A", "OL7934770A"),
+      edition("OL5176880A"),
+      edition("OL5176880A", "OL8A"),
+      edition("OL8A", "OL5176880A"),
+      edition("OL5176880A"),
+      { key: "/books/OL2M" },
+    ];
+    expect(creditedAuthorKeys(entries)).toEqual(["OL5176880A", "OL8A"]);
+    expect(creditedAuthorKeys(entries.slice(0, 3))).toEqual([]);
+    expect(creditedAuthorKeys([])).toEqual([]);
+  });
+
+  it("drops the listed authors the editions do not credit and leaves everything else alone", () => {
+    const book = normalizeSearchDoc(helpDoc)!;
+    const settled = applyEnglishEdition(book, { votes: 0, authorKeys: ["OL5176880A"] });
+    expect(settled.authors).toEqual(["Kathryn Stockett"]);
+    expect(settled.authorKeys).toEqual(["OL5176880A"]);
+    expect(settled.title).toBe("The Help");
+    expect(applyEnglishEdition(book, { title: "The Help", votes: 9, authorKeys: ["OL5176880A", "OL7934770A"] })).toBe(book);
+    expect(applyEnglishEdition(book, { votes: 0, authorKeys: ["OL999A"] })).toBe(book);
+    expect(applyEnglishEdition(book, { votes: 0 })).toBe(book);
+    const titled = applyEnglishEdition({ ...book, title: "La ayuda" }, { title: "The Help", votes: 5, authorKeys: ["OL5176880A"] });
+    expect(titled.title).toBe("The Help");
+    expect(titled.authors).toEqual(["Kathryn Stockett"]);
   });
 });

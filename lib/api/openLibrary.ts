@@ -25,7 +25,9 @@ const SEARCH_FIELDS = [
   "title",
   "subtitle",
   "author_name",
+  "author_key",
   "author_alternative_name",
+  "contributor",
   "first_publish_year",
   "cover_i",
   "number_of_pages_median",
@@ -45,7 +47,7 @@ const SEARCH_FIELDS = [
   "editions.language",
 ].join(",");
 
-const SUMMARY_FIELDS = ["key", "title", "author_name", "author_alternative_name", "first_publish_year", "cover_i", "editions", "editions.title", "editions.cover_i", "editions.language"].join(",");
+const SUMMARY_FIELDS = ["key", "title", "author_name", "author_key", "author_alternative_name", "first_publish_year", "cover_i", "editions", "editions.title", "editions.cover_i", "editions.language"].join(",");
 
 export type OpenLibrarySort = "relevance" | "rating" | "readinglog" | "want_to_read" | "new" | `random_${number}`;
 
@@ -132,12 +134,14 @@ export async function getOpenLibraryTrending(period: "daily" | "weekly" | "month
 /* ---------------------------------------------------------------- English edition */
 
 export interface OpenLibraryEnglishEdition {
-  /** The title most of the work's English-labelled editions share. */
-  title: string;
+  /** The title most of the work's English-labelled editions share; absent when no edition is labelled English. */
+  title?: string;
   /** Subtitle carried by at least half of those editions, if any. */
   subtitle?: string;
   /** How many editions carry that title: a single one is no better evidence than the search index gave. */
   votes: number;
+  /** Authors credited on enough of the work's editions to be its authors (see creditedAuthorKeys), most credited first. */
+  authorKeys?: string[];
 }
 
 const EDITION_SAMPLE = 50;
@@ -147,14 +151,44 @@ const DAY = 24 * 3600_000;
  * The search index returns one edition per work and its language label is crowd-edited, so the
  * "English" edition is sometimes a translation ("Anatema") or a romanised original ("Coffee Ga
  * Samenai Uchi Ni"). The work's edition list settles it by majority: one call per work, cached for
- * a day as the small derived result (the raw edition list is never kept).
+ * a day as the small derived result (the raw edition list is never kept). The same list says which
+ * of the work's listed authors are credited on its editions at large and which only on a translation.
  */
 export async function getOpenLibraryEnglishEdition(workId: string): Promise<OpenLibraryEnglishEdition | undefined> {
   const found = await memo<OpenLibraryEnglishEdition | null>(`ol-english-edition:${workId}`, DAY, async () => {
     const json = await fetchJson<Json>(`${BASE}/works/${encodeURIComponent(workId)}/editions.json?limit=${EDITION_SAMPLE}`, { ttlMs: 0 });
-    return (isRecord(json) && Array.isArray(json.entries) ? pickEnglishEditionTitle(json.entries) : undefined) ?? null;
+    const entries = isRecord(json) && Array.isArray(json.entries) ? json.entries : [];
+    const english = pickEnglishEditionTitle(entries);
+    const authorKeys = creditedAuthorKeys(entries);
+    if (!english && authorKeys.length === 0) return null;
+    return { ...(english ?? { votes: 0 }), authorKeys };
   });
   return found ?? undefined;
+}
+
+/** An edition list is evidence about authors only once it has a few editions. */
+const CREDIT_SAMPLE = 4;
+
+/**
+ * Author keys credited on the work's editions, most credited first, dropping those credited on
+ * fewer than a fifth as many editions as the most credited author (and on fewer than two): a
+ * translator or illustrator listed as an author of one foreign edition reaches the work's author
+ * list, but never its English editions. Empty when the list is too short to say anything.
+ */
+export function creditedAuthorKeys(entries: Json[]): string[] {
+  const counts = new Map<string, number>();
+  let editions = 0;
+  for (const entry of entries) {
+    if (!isRecord(entry) || !Array.isArray(entry.authors)) continue;
+    const keys = uniq(entry.authors.map((a) => (isRecord(a) ? str(a.key)?.match(/OL\d+A/)?.[0] : undefined)).filter((k): k is string => k !== undefined));
+    if (keys.length === 0) continue;
+    editions++;
+    for (const k of keys) counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  if (editions < CREDIT_SAMPLE) return [];
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const top = ranked[0][1];
+  return ranked.filter(([, n]) => n >= 2 && n * 5 >= top).map(([k]) => k);
 }
 
 const fold = (s: string) => s.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
@@ -222,9 +256,22 @@ export function pickEnglishEditionTitle(entries: Json[]): OpenLibraryEnglishEdit
   return { title, subtitle: subtitle && subtitle[1] * 2 >= best.votes ? subtitle[0] : undefined, votes: best.votes };
 }
 
-/** Swap in the title the work's English editions share when the catalog gave another one; otherwise leave the record alone. */
-export function applyEnglishEdition(book: Book, english: OpenLibraryEnglishEdition | undefined): Book {
-  if (!english || book.source !== "openlibrary") return book;
+/** Keep only the authors the work's editions credit; a record never loses all of its authors. */
+function creditAuthors(book: Book, credited: string[] | undefined): Book {
+  if (!credited?.length || !book.authorKeys || book.authorKeys.length !== book.authors.length) return book;
+  const keep = book.authorKeys.map((k) => credited.includes(k));
+  if (keep.every(Boolean) || !keep.some(Boolean)) return book;
+  return { ...book, authors: book.authors.filter((_, i) => keep[i]), authorKeys: book.authorKeys.filter((_, i) => keep[i]) };
+}
+
+/**
+ * Swap in the title the work's English editions share when the catalog gave another one, and drop
+ * listed authors its editions do not credit; otherwise leave the record alone.
+ */
+export function applyEnglishEdition(record: Book, english: OpenLibraryEnglishEdition | undefined): Book {
+  if (!english || record.source !== "openlibrary") return record;
+  const book = creditAuthors(record, english.authorKeys);
+  if (!english.title) return book;
   if (titleKey(english.title) === titleKey(book.title)) {
     // Same title. Differing only by a leading article: the work title's article is right, keep it.
     if (titleWords(english.title) !== titleWords(book.title)) return book;
@@ -249,37 +296,62 @@ function uninvert(name: string): string {
   return m && isLatin(name) ? `${m[2].trim()} ${m[1].trim()}` : name;
 }
 
-/** A spelling worth showing: Latin script, a few words, no dates or list separators. */
+/** A spelling worth showing: Latin script, a few distinct words ("Fyodor Fyodor Dostoevsky" is a catalog slip), no dates or list separators. */
 function plausibleName(name: string): boolean {
-  const words = name.split(" ").length;
-  return isLatin(name) && !name.includes(",") && !/\d/.test(name) && name.length < 40 && words >= 1 && words <= 4;
+  const words = nameTokens(name);
+  return isLatin(name) && !name.includes(",") && !/\d/.test(name) && name.length < 40 && words.length >= 1 && words.length <= 4 && new Set(words).size === words.length;
 }
 
-/** "NEAL STEPHENSON" / "neal stephenson" → "Neal Stephenson"; mixed-case names are left as they are. */
-function tidyName(name: string): string {
-  if (!shouting(name) || !isLatin(name)) return name;
+const ASCII = /^[\x20-\x7e]+$/;
+
+/** "DOSTOYEVSKY" → "Dostoyevsky", "SAINT-EXUPERY" → "Saint-Exupery", "O'BRIEN" → "O'Brien". */
+function capitalizeWord(word: string): string {
+  return word.toLowerCase().replace(/(^|[-'’])(\p{L})/gu, (_, sep: string, c: string) => sep + c.toUpperCase());
+}
+
+/** Generational and regnal numerals that occur in names and must stay upper-case. */
+const NUMERAL = /^(?:II|III|IV|VI|VII|VIII|IX|XI|XII|XIII|XIV|XV|XVI)$/;
+
+/**
+ * "NEAL STEPHENSON" / "neal stephenson" → "Neal Stephenson", "Fedor DOSTOYEVSKY" → "Fedor Dostoyevsky".
+ * Inside a mixed-case name only shouting words of three or more letters are touched, so initials
+ * ("DC", "J.R.R.", "F. M.") and numerals ("Henry VIII") stay as they are.
+ */
+export function tidyName(name: string): string {
+  if (!isLatin(name)) return name;
+  const whole = shouting(name);
   return name
-    .toLowerCase()
     .split(" ")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .map((w) => {
+      const letters = w.replace(/[^\p{L}]/gu, "");
+      if (!letters || w.includes(".") || NUMERAL.test(letters)) return w;
+      const upper = letters === letters.toUpperCase();
+      return (upper && letters.length >= 3) || whole ? capitalizeWord(w) : w;
+    })
     .join(" ");
 }
 
 /**
  * The catalog keeps one current spelling per author plus every alias seen across editions, and the
- * current one is sometimes another script (村上春樹) or a local transliteration ("Fiódor Dostoievski").
- * The aliases vote: the spelling whose words recur most often among aliases of the same person wins,
- * and the current spelling keeps a tie. Plain ASCII names are never second-guessed.
+ * current one is sometimes another script (村上春樹), a local transliteration ("Fiódor Dostoievski")
+ * or a shouting snapshot ("Fedor DOSTOYEVSKY"). The aliases vote: spellings that differ only by case,
+ * accents or punctuation are one spelling ("Fyodor Dostoyevsky", "Fyodor DOSTOYEVSKY", "Dostoyevsky,
+ * Fyodor"), and the one the most aliases use wins; word frequency breaks ties, and the current
+ * spelling keeps a tie after that. Only the English catalog's own spellings vote (plain ASCII; accented
+ * aliases come from foreign editions, "Fédor Dostoïevski"), unless there are none. Plain ASCII names
+ * in ordinary case are never second-guessed.
  */
 export function conventionalSpelling(name: string, aliases: string[]): string {
-  const suspect = !isLatin(name) || /[^\x20-\x7e]/.test(name);
+  const suspect = !isLatin(name) || !ASCII.test(name) || tidyName(name) !== name;
   if (!suspect || aliases.length === 0) return tidyName(name);
   const tokens = (s: string) => fold(s).split(/\s+/).filter(Boolean);
   const own = plausibleName(name) ? tokens(name) : [];
   // Only spellings of the same person vote: an alias must share a word stem with the current spelling
   // (nothing can be checked against a non-Latin spelling, so every alias counts then).
   const related = (alias: string) => own.length === 0 || tokens(alias).some((t) => t.length >= 4 && own.some((o) => o.length >= 4 && o.slice(0, 4) === t.slice(0, 4)));
-  const candidates = aliases.filter((a) => plausibleName(a) && related(a));
+  const pool = aliases.filter((a) => plausibleName(a) && related(a));
+  const english = pool.filter((a) => ASCII.test(a));
+  const candidates = english.length > 0 ? english : pool;
   if (candidates.length === 0) return tidyName(name);
 
   const freq = new Map<string, number>();
@@ -288,34 +360,102 @@ export function conventionalSpelling(name: string, aliases: string[]): string {
     const ts = tokens(s);
     return ts.reduce((sum, t) => sum + (freq.get(t) ?? 0), 0) / ts.length;
   };
-  let best = own.length ? name : undefined;
-  let bestScore = best ? score(best) : -1;
+  const groups = new Map<string, string[]>();
   for (const c of candidates) {
-    const s = score(c);
-    if (s > bestScore + 1e-9) {
-      best = c;
-      bestScore = s;
-    }
+    const key = tokens(c).join(" ");
+    groups.set(key, [...(groups.get(key) ?? []), c]);
   }
-  return tidyName(best ?? name);
+  const ownKey = own.join(" ");
+  const [key, members] = [...groups.entries()].sort(
+    (a, b) => b[1].length - a[1].length || score(b[0]) - score(a[0]) || (a[0] === ownKey ? -1 : b[0] === ownKey ? 1 : 0),
+  )[0];
+  if (key === ownKey) return tidyName(name);
+  return tidyName(members.find((m) => tidyName(m) === m) ?? members[0]);
+}
+
+/** The words of a name, folded: "Garnett, Constance Black, 1862-1946." → ["garnett", "constance", "black"]. */
+function nameTokens(name: string): string[] {
+  return fold(name)
+    .split(/[\s,]+/)
+    .map((t) => t.replace(/[^\p{L}'-]/gu, ""))
+    .filter(Boolean);
+}
+
+/**
+ * Whether two spellings name the same person: every word of the shorter one occurs in the longer
+ * ("Alvaro Abella" in "Álvaro Abella Villar"), an initial matching any word it starts ("James L. Roberts"
+ * and "James Lamar Roberts"), and at least one real word in common.
+ */
+export function sameName(a: string, b: string): boolean {
+  const [short, long] = [nameTokens(a), nameTokens(b)].sort((x, y) => x.length - y.length);
+  if (short.length === 0) return false;
+  const matches = (t: string, u: string) => t === u || (t.length === 1 && u.startsWith(t)) || (u.length === 1 && t.startsWith(u));
+  return short.every((t) => long.some((u) => matches(t, u))) && short.some((t) => t.length >= 3 && long.includes(t));
+}
+
+/* A contributor entry that names a role: "Garnett, Constance, 1861-1946, translator", "Magarshack, David, tr.",
+ * "Ignat Avsey (Translator)", "Sharp, William, 1900- illus.", "Maire Jaanus (Introduction)". */
+const ROLE =
+  "(?:joint\\s+)?(?:translat\\w*|trans|tr|illustrat\\w*|illus|ill|editor|ed|narrat\\w*|reader|read by|introduction|foreword|afterword|preface|photograph\\w*|cover art(?:ist)?|adapt\\w*|abridg\\w*|compil\\w*|comp|designer|commentar\\w*|annotat\\w*|writer of \\w+)";
+const ROLE_TAIL = new RegExp(`(?:\\(${ROLE}\\.?\\)|[\\d.\\-]\\s*${ROLE}\\.?|,\\s*${ROLE}\\.?)\\s*$`);
+
+/** The folded names of contributors the catalog knows in a non-author role (translator, illustrator, editor, narrator…). */
+function roleContributors(doc: Record<string, Json>): string[] {
+  const out: string[] = [];
+  for (const raw of strArray(doc.contributor, 150)) {
+    const entry = fold(raw).trim();
+    const tail = entry.match(ROLE_TAIL)?.[0];
+    if (!tail) continue;
+    // After a comma, a short role word needs a third comma-separated part behind it: "Brubaker, Ed" is a name.
+    if (tail.startsWith(",") && tail.replace(/^,\s*(joint\s+)?/, "").replace(/\.$/, "").length < 4 && (entry.match(/,/g)?.length ?? 0) < 2) continue;
+    const name = entry.split(/[(\d]/)[0].replace(ROLE_TAIL, "");
+    if (nameTokens(name).length > 0) out.push(name);
+  }
+  return out;
+}
+
+export interface OpenLibraryAuthor {
+  name: string;
+  /** Open Library author key (OL123A) when the record carries one per name. */
+  key?: string;
+}
+
+/** Shown authors are capped: anthologies and translator-laden records list far more than the UI can name. */
+const MAX_AUTHORS = 3;
+
+/**
+ * The work's authors in the catalog's order, each in its conventional spelling, without the same person
+ * listed twice ("Álvaro Abella Villar", "Alvaro Abella") and without later names the catalog itself
+ * credits as translators or illustrators elsewhere on the record. At most MAX_AUTHORS.
+ */
+export function pickAuthorEntries(doc: Record<string, Json>): OpenLibraryAuthor[] {
+  const raw = strArray(doc.author_name, 8);
+  if (raw.length === 0) return [];
+  // A stray trailing comma ("Fyodor Dostoyevsky,") is a catalog slip, not another spelling.
+  const clean = (s: string) => uninvert(s.replace(/[,;]+$/, "").trim());
+  const names = raw.map(clean);
+  const keys = strArray(doc.author_key, 8);
+  const aliases = strArray(doc.author_alternative_name, 250).map(clean);
+  const roles = roleContributors(doc);
+  const kept: OpenLibraryAuthor[] = [];
+  names.forEach((name, i) => {
+    // Aliases that are another listed author's current spelling usually belong to that author (translators,
+    // co-authors), unless the same person is listed twice under two scripts and those are the only Latin aliases.
+    const others = new Set(names.filter((n) => n !== name).map(fold));
+    const own = conventionalSpelling(
+      name,
+      aliases.filter((a) => !others.has(fold(a))),
+    );
+    const spelled = isLatin(own) ? own : conventionalSpelling(name, aliases);
+    if (kept.some((k) => sameName(k.name, spelled))) return;
+    if (kept.length > 0 && roles.some((r) => sameName(r, spelled))) return;
+    kept.push({ name: spelled, key: keys.length === raw.length ? keys[i] : undefined });
+  });
+  return kept.slice(0, MAX_AUTHORS);
 }
 
 export function pickAuthor(doc: Record<string, Json>): string[] {
-  const names = strArray(doc.author_name, 6).map(uninvert);
-  if (names.length === 0) return [];
-  const aliases = strArray(doc.author_alternative_name, 80).map(uninvert);
-  return uniq(
-    names.map((name) => {
-      // Aliases that are another listed author's current spelling usually belong to that author (translators,
-      // co-authors), unless the same person is listed twice under two scripts and those are the only Latin aliases.
-      const others = new Set(names.filter((n) => n !== name).map(fold));
-      const spelled = conventionalSpelling(
-        name,
-        aliases.filter((a) => !others.has(fold(a))),
-      );
-      return isLatin(spelled) ? spelled : conventionalSpelling(name, aliases);
-    }),
-  );
+  return pickAuthorEntries(doc).map((a) => a.name);
 }
 
 function firstEnglishEdition(doc: Record<string, Json>): Record<string, Json> | undefined {
@@ -427,12 +567,15 @@ export function normalizeSearchDoc(raw: Json): Book | undefined {
   const want = num(raw.want_to_read_count) ?? 0;
   const read = num(raw.already_read_count) ?? 0;
   const pages = num(raw.number_of_pages_median);
+  const authors = pickAuthorEntries(raw);
+  const authorKeys = authors.length > 0 && authors.every((a) => a.key) ? authors.map((a) => a.key as string) : undefined;
 
   return {
     id: workId,
     title: tidyTitle(stripCatalogNote(title)),
     subtitle,
-    authors: pickAuthor(raw),
+    authors: authors.map((a) => a.name),
+    authorKeys,
     coverUrl: validCover ? olCoverUrl(validCover, "M") : undefined,
     coverUrlLarge: validCover ? olCoverUrl(validCover, "L") : undefined,
     publishedYear: year(raw.first_publish_year),
