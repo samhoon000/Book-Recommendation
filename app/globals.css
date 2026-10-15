@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+/*
+  Libria design tokens: "the reading room after hours".
+  A warm near-black room, ivory paper, and one lamp-gold accent.
+  Mood colors are used only as faint tints tied to what the reader picked.
+*/
+:root {
+  --ink: #12100d;
+  --umber: #1a1713;
+  --shelf: #24201a;
+  --rule: #39332a;
+  --vellum: #eee6d4;
+  --parchment: #a99f8b;
+  --dim: #7d7466;
+  --lamp: #e0aa48;
+  --lamp-soft: #e0aa4833;
+  --oxblood: #a8473c;
+  --moss: #5e8a68;
+  --midnight: #5470a6;
+  --heather: #8f7aae;
+  --ember: #c9733a;
+  --mood: var(--lamp);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-umber: var(--umber);
+  --color-shelf: var(--shelf);
+  --color-rule: var(--rule);
+  --color-vellum: var(--vellum);
+  --color-parchment: var(--parchment);
+  --color-dim: var(--dim);
+  --color-lamp: var(--lamp);
+  --color-oxblood: var(--oxblood);
+  --color-moss: var(--moss);
+  --color-midnight: var(--midnight);
+  --color-heather: var(--heather);
+  --color-ember: var(--ember);
+  --font-sans: var(--font-geist);
+  --font-display: var(--font-cormorant);
+  --ease-spring: cubic-bezier(0.22, 1.2, 0.36, 1);
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html {
+  background: var(--ink);
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--ink);
+  color: var(--vellum);
+  font-family: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv11";
+  text-rendering: optimizeLegibility;
+  min-height: 100dvh;
+}
+
+/* Paper grain over everything, very faint. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 .95  0 0 0 0 .85  0 0 0 .9 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+::selection {
+  background: var(--lamp);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.font-display {
+  font-family: var(--font-cormorant), "Iowan Old Style", Georgia, serif;
+  font-optical-sizing: auto;
+}
+
+/* Display type: Cormorant needs tighter leading and a little negative tracking at size. */
+.display-xl {
+  font-family: var(--font-cormorant), Georgia, serif;
+  font-weight: 500;
+  font-size: clamp(3rem, 8.2vw, 7.4rem);
+  line-height: 0.92;
+  letter-spacing: -0.02em;
+}
+.display-lg {
+  font-family: var(--font-cormorant), Georgia, serif;
+  font-weight: 500;
+  font-size: clamp(2.4rem, 5.4vw, 4.6rem);
+  line-height: 0.98;
+  letter-spacing: -0.015em;
+}
+.display-md {
+  font-family: var(--font-cormorant), Georgia, serif;
+  font-weight: 500;
+  font-size: clamp(1.9rem, 3.4vw, 2.9rem);
+  line-height: 1.04;
+  letter-spacing: -0.01em;
+}
+
+.prose-serif {
+  font-family: var(--font-cormorant), Georgia, serif;
+  font-size: 1.32rem;
+  line-height: 1.5;
+}
+
+/* Thin scrollbars for shelf rows. */
+.shelf-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+.shelf-scroll > * {
+  scroll-snap-align: start;
+}
+
+/* Loading shimmer that respects reduced motion. */
+.shimmer {
+  background: linear-gradient(100deg, var(--shelf) 20%, #2f2a22 40%, var(--shelf) 60%);
+  background-size: 300% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+/* The book object: sharp spine edge, softly rounded fore-edge. */
+.book-shape {
+  border-radius: 2px 5px 5px 2px;
+}
+.book-spine-shade {
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.38) 0, rgba(255, 255, 255, 0.08) 3%, rgba(0, 0, 0, 0.1) 6%, transparent 12%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
