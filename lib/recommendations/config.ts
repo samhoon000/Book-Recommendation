@@ -146,7 +146,11 @@ export const RETRIEVAL = {
 
 export const EMBEDDINGS = {
   model: process.env.LIBRIA_EMBEDDING_MODEL ?? "Xenova/all-MiniLM-L6-v2",
-  enabled: process.env.LIBRIA_EMBEDDINGS !== "off",
+  /**
+   * Off with LIBRIA_EMBEDDINGS=off. Also off on Vercel unless LIBRIA_EMBEDDINGS=on: the native ONNX runtime is
+   * excluded from the serverless bundle (next.config.ts) and the model cache has nowhere persistent to live there.
+   */
+  enabled: process.env.LIBRIA_EMBEDDINGS === "on" || (process.env.LIBRIA_EMBEDDINGS !== "off" && !process.env.VERCEL),
   cacheDir: process.env.LIBRIA_CACHE_DIR ?? ".cache",
   maxMemoryEntries: 6000,
   /** Length of a book document fed to the model (the model truncates at 256 tokens anyway). */

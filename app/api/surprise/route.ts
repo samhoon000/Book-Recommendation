@@ -2,6 +2,9 @@ import type { NextRequest } from "next/server";
 import { surprise, type SurpriseKind } from "@/lib/recommendations/surprise";
 import { CACHE_HEADERS, errorResponse, handleRouteError } from "@/lib/api/responses";
 
+// Open Library round trips plus ranking can take ~10 s on a cold instance; stay within every Vercel plan.
+export const maxDuration = 60;
+
 const KINDS: SurpriseKind[] = ["fiction", "nonfiction", "any"];
 
 export async function GET(request: NextRequest) {

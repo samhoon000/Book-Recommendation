@@ -3,6 +3,9 @@ import { sanitizePreferences, sanitizeSession } from "@/lib/discovery/sanitize";
 import { CACHE_HEADERS, errorResponse, handleRouteError } from "@/lib/api/responses";
 import { memo } from "@/lib/api/http";
 
+// Open Library round trips plus ranking can take ~10 s on a cold instance; stay within every Vercel plan.
+export const maxDuration = 60;
+
 export async function POST(request: Request) {
   let body: unknown;
   try {
