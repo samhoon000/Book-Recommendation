@@ -1,5 +1,7 @@
 # Libria
 
+[![CI](https://github.com/samhoon000/Book-Recommendation/actions/workflows/ci.yml/badge.svg)](https://github.com/samhoon000/Book-Recommendation/actions/workflows/ci.yml)
+
 **Tell me what you want to feel. I'll find the book.**
 
 Libria is a book discovery app. Instead of a genre dropdown it asks how you want to feel, what you've loved, how much time you have and what to avoid. It then pulls candidates from [Open Library](https://openlibrary.org/developers/api) through several targeted routes, scores every one against a derived reader profile (optionally with a local embedding model), diversifies the final list, and explains exactly why each book made the cut.
